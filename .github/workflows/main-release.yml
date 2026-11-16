@@ -1,0 +1,103 @@
+﻿name: Build Android APK (main)
+
+on:
+  push:
+    branches: [main]
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+concurrency:
+  group: main-apk-release
+  cancel-in-progress: true
+
+jobs:
+  build-and-release:
+    runs-on: ubuntu-22.04
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Set up Java
+        uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: '17'
+
+      - name: Set up Android SDK
+        uses: android-actions/setup-android@v3
+
+      - name: Install Android SDK and NDK
+        run: |
+          sdkmanager "platform-tools" "platforms;android-35" "build-tools;35.0.0" "ndk;27.2.12479018"
+
+      - name: Set up Rust targets
+        uses: actions-rust-lang/setup-rust-toolchain@v1
+        with:
+          toolchain: stable
+          targets: aarch64-linux-android,armv7-linux-androideabi
+          components: rustfmt
+
+      - name: Check Rust formatting
+        run: cargo fmt --all -- --check
+
+      - name: Configure Android NDK toolchain
+        run: |
+          SDK="${ANDROID_SDK_ROOT:-$ANDROID_HOME}"
+          NDK="$SDK/ndk/27.2.12479018"
+          echo "ANDROID_NDK_HOME=$NDK" >> "$GITHUB_ENV"
+          echo "CARGO_TARGET_AARCH64_LINUX_ANDROID_LINKER=$NDK/toolchains/llvm/prebuilt/linux-x86_64/bin/aarch64-linux-android24-clang" >> "$GITHUB_ENV"
+          echo "CARGO_TARGET_ARMV7_LINUX_ANDROIDEABI_LINKER=$NDK/toolchains/llvm/prebuilt/linux-x86_64/bin/armv7a-linux-androideabi21-clang" >> "$GITHUB_ENV"
+
+      - name: Build Rust native libraries
+        run: |
+          cargo build --release --target aarch64-linux-android
+          cargo build --release --target armv7-linux-androideabi
+          mkdir -p app/src/main/jniLibs/arm64-v8a app/src/main/jniLibs/armeabi-v7a
+          cp target/aarch64-linux-android/release/libtgwsproxy.so app/src/main/jniLibs/arm64-v8a/libtgwsproxy.so
+          cp target/armv7-linux-androideabi/release/libtgwsproxy.so app/src/main/jniLibs/armeabi-v7a/libtgwsproxy.so
+
+      - name: Create CI signing key
+        run: |
+          keytool -genkeypair -v \
+            -keystore ci-release.keystore \
+            -storepass android -keypass android \
+            -alias androiddebugkey \
+            -keyalg RSA -keysize 2048 -validity 10000 \
+            -dname "CN=TG WS Proxy CI, OU=CI, O=TG WS Proxy, L=CI, ST=CI, C=US"
+          cat > local.properties <<EOF
+          sdk.dir=${ANDROID_SDK_ROOT:-$ANDROID_HOME}
+          KEYSTORE_FILE=ci-release.keystore
+          KEYSTORE_PASSWORD=android
+          KEY_ALIAS=androiddebugkey
+          KEY_PASSWORD=android
+          EOF
+
+      - name: Build release APKs
+        run: |
+          chmod +x gradlew
+          ./gradlew :app:assembleUniversalRelease :app:assembleArm64Release :app:assembleArm32Release --no-daemon
+
+      - name: Prepare release files
+        run: |
+          mkdir -p app/release
+          cp app/build/outputs/apk/universal/release/app-universal-release.apk app/release/tg-ws-proxy-main-universal.apk
+          cp app/build/outputs/apk/arm64/release/app-arm64-release.apk app/release/tg-ws-proxy-main-v8a-minsdk24.apk
+          cp app/build/outputs/apk/arm32/release/app-arm32-release.apk app/release/tg-ws-proxy-main-v7a-minsdk21.apk
+
+      - name: Publish rolling main prerelease
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          if gh release view main >/dev/null 2>&1; then
+            gh release upload main app/release/*.apk --clobber
+            gh release edit main --title "Main build ($GITHUB_SHA)" --prerelease
+          else
+            gh release create main app/release/*.apk \
+              --title "Main build ($GITHUB_SHA)" \
+              --prerelease \
+              --notes "Автоматическая сборка из коммита $GITHUB_SHA."
+          fi
+

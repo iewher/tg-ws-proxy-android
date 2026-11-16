@@ -49,6 +49,12 @@ Telegram Android → Локальный MTProto (по умолчанию 127.0.0
 5. Нажмите **«Запустить прокси»** — появится уведомление о работе в фоновом режиме.
 6. Нажмите **«Применить в Telegram»** — откроется Telegram-клиент, где останется только подтвердить подключение.
 
+## Сборка и APK в GitHub Releases
+
+Workflow [`Build Android APK (main)`](.github/workflows/main-release.yml) запускается при каждом push в `main`. Он собирает native Rust-библиотеки и три APK для Android ABI, затем обновляет rolling prerelease **Main build** в разделе GitHub Releases.
+
+Подробные инструкции по локальной сборке, CI и подписи находятся в [`docs/RELEASES.md`](docs/RELEASES.md).
+
 ---
 
 # 🎦 Видео гайд по установке и использованию
